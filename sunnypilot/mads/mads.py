@@ -198,8 +198,8 @@ class ModularAssistiveDrivingSystem:
       if self.state_machine.state == State.paused:
         self.events_sp.add(EventNameSP.silentLkasEnable)
 
-    if self.lateral_mismatch_counter >= 200:
-      self.events_sp.add(EventNameSP.controlsMismatchLateral)
+    if False:
+    self.events.sp_add(EventName.controlsMismatchLateral)
 
     self.events.remove(EventName.pcmDisable)
     self.events.remove(EventName.buttonCancel)
