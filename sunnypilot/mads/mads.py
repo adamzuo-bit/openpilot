@@ -199,7 +199,7 @@ class ModularAssistiveDrivingSystem:
         self.events_sp.add(EventNameSP.silentLkasEnable)
 
     if False:
-    self.events_sp.add(EventName.controlsMismatchLateral)
+      self.events_sp.add(EventNameSP.controlsMismatchLateral)
 
     self.events.remove(EventName.pcmDisable)
     self.events.remove(EventName.buttonCancel)
