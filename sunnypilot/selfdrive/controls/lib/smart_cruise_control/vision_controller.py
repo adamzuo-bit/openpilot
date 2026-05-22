@@ -115,7 +115,7 @@ class SmartCruiseControlVision:
           if self.v_ego <= MIN_V:
             pass
           # If significant lateral acceleration is predicted ahead, then move to Entering turn state.
-          elif (self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH and self.time_to_apex < 5.0):
+          elif self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
             self.state = VisionState.entering
 
         # OVERRIDING
