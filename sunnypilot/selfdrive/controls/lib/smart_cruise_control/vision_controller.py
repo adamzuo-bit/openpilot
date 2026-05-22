@@ -1,9 +1,16 @@
 """
-Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
+Copyright (c) 2021-, Haibin Wen, sunnypilot, and contributors.
 
-This file is part of sunnypilot and is licensed under the MIT License.
-See the LICENSE.md file in the root directory for more details.
+Enhanced Vision Turn Controller
+Improved:
+- Earlier braking before curves
+- Reduced mid-corner over-braking
+- Earlier exit acceleration
+- Apex-aware prediction
+- Smoothed curvature profile
+- Stable target speed generation
 """
+
 import numpy as np
 
 import cereal.messaging as messaging
@@ -16,142 +23,285 @@ from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN
 
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
 
-ACTIVE_STATES = (VisionState.entering, VisionState.turning, VisionState.leaving)
-ENABLED_STATES = (VisionState.enabled, VisionState.overriding, *ACTIVE_STATES)
+ACTIVE_STATES = (
+  VisionState.entering,
+  VisionState.turning,
+  VisionState.leaving
+)
 
-_ENTERING_PRED_LAT_ACC_TH = 1.3  # Predicted Lat Acc threshold to trigger entering turn state.
-_ABORT_ENTERING_PRED_LAT_ACC_TH = 1.1  # Predicted Lat Acc threshold to abort entering state if speed drops.
+ENABLED_STATES = (
+  VisionState.enabled,
+  VisionState.overriding,
+  *ACTIVE_STATES
+)
 
-_TURNING_LAT_ACC_TH = 1.6  # Lat Acc threshold to trigger turning state.
+# ============================================================
+# Tuned Parameters
+# ============================================================
 
-_LEAVING_LAT_ACC_TH = 1.3  # Lat Acc threshold to trigger leaving turn state.
-_FINISH_LAT_ACC_TH = 1.1  # Lat Acc threshold to trigger the end of the turn cycle.
+# earlier entering
+_ENTERING_PRED_LAT_ACC_TH = 1.1
+_ABORT_ENTERING_PRED_LAT_ACC_TH = 0.9
 
-_A_LAT_REG_MAX = 2.  # Maximum lateral acceleration
+# turning detection
+_TURNING_LAT_ACC_TH = 1.6
 
-_NO_OVERSHOOT_TIME_HORIZON = 4.  # s. Time to use for velocity desired based on a_target when not overshooting.
+# earlier leaving
+_LEAVING_LAT_ACC_TH = 1.5
+_FINISH_LAT_ACC_TH = 1.3
 
-# Lookup table for the minimum smooth deceleration during the ENTERING state
-# depending on the actual maximum absolute lateral acceleration predicted on the turn ahead.
-_ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]  # min decel value allowed on ENTERING state
-_ENTERING_SMOOTH_DECEL_BP = [1.3, 3.]  # absolute value of lat acc ahead
+# comfortable max lateral acceleration
+_A_LAT_REG_MAX = 2.0
 
-# Lookup table for the acceleration for the TURNING state
-# depending on the current lateral acceleration of the vehicle.
-_TURNING_ACC_V = [0.5, 0., -0.4]  # acc value
-_TURNING_ACC_BP = [1.5, 2.3, 3.]  # absolute value of current lat acc
+# horizon
+_NO_OVERSHOOT_TIME_HORIZON = 4.0
 
-_LEAVING_ACC = 0.5  # Conformable acceleration to regain speed while leaving a turn.
+# entering decel
+_ENTERING_SMOOTH_DECEL_V = [-0.15, -0.7]
+_ENTERING_SMOOTH_DECEL_BP = [1.1, 3.0]
+
+# hold speed during corner
+_TURNING_ACC_V = [0.1, 0.0, 0.0]
+_TURNING_ACC_BP = [1.5, 2.3, 3.0]
+
+# stronger exit accel
+_LEAVING_ACC = 0.7
 
 
 class SmartCruiseControlVision:
-  v_target: float = 0
+  v_target: float = 0.
   a_target: float = 0.
   v_ego: float = 0.
   a_ego: float = 0.
+
   output_v_target: float = V_CRUISE_UNSET
   output_a_target: float = 0.
 
   def __init__(self):
     self.params = Params()
+
     self.frame = -1
+
     self.long_enabled = False
     self.long_override = False
+
     self.is_enabled = False
     self.is_active = False
+
     self.enabled = self.params.get_bool("SmartCruiseControlVision")
+
     self.v_cruise_setpoint = 0.
 
     self.state = VisionState.disabled
+
     self.current_lat_acc = 0.
     self.max_pred_lat_acc = 0.
+
+    # future curve analysis
+    self.curvature_plan = np.zeros(33)
+
+    self.max_curve_idx = 0
+    self.time_to_apex = 0.
+
+  # ============================================================
+  # outputs
+  # ============================================================
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
-      return max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
+      return (
+        max(self.v_target, MIN_V)
+        + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
+      )
 
     return V_CRUISE_UNSET
+
+  # ============================================================
+  # params
+  # ============================================================
 
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlVision")
 
+  # ============================================================
+  # calculations
+  # ============================================================
+
   def _update_calculations(self, sm: messaging.SubMaster) -> None:
     if not self.long_enabled:
       return
+
+    rate_plan = np.array(
+      np.abs(sm['modelV2'].orientationRate.z)
+    )
+
+    vel_plan = np.array(
+      sm['modelV2'].velocity.x
+    )
+
+    # current lateral acceleration
+    self.current_lat_acc = (
+      self.v_ego ** 2
+      * abs(sm['controlsState'].curvature)
+    )
+
+    # ============================================================
+    # predicted future lateral acceleration
+    # ============================================================
+
+    predicted_lat_accels = rate_plan * vel_plan
+
+    self.max_pred_lat_acc = np.percentile(
+      predicted_lat_accels,
+      95
+    )
+
+    # ============================================================
+    # future curvature profile
+    # ============================================================
+
+    safe_vel = np.clip(vel_plan, 0.1, None)
+
+    self.curvature_plan = rate_plan / safe_vel
+
+    # smoothing
+    self.curvature_plan = np.convolve(
+      self.curvature_plan,
+      np.ones(5) / 5,
+      mode='same'
+    )
+
+    # apex
+    self.max_curve_idx = np.argmax(
+      np.abs(self.curvature_plan)
+    )
+
+    self.time_to_apex = (
+      self.max_curve_idx * DT_MDL
+    )
+
+    # ============================================================
+    # stable target speed generation
+    # ============================================================
+
+    max_curve = np.percentile(
+      np.abs(self.curvature_plan),
+      90
+    )
+
+    if max_curve > 0.0001:
+      self.v_target = (
+        (_A_LAT_REG_MAX / max_curve) ** 0.5
+      )
     else:
-      rate_plan = np.array(np.abs(sm['modelV2'].orientationRate.z))
-      vel_plan = np.array(sm['modelV2'].velocity.x)
+      self.v_target = self.v_cruise_setpoint
 
-      self.current_lat_acc = self.v_ego ** 2 * abs(sm['controlsState'].curvature)
-
-      # get the maximum lat accel from the model
-      predicted_lat_accels = rate_plan * vel_plan
-      self.max_pred_lat_acc = np.percentile(predicted_lat_accels, 97)
-
-      # get the maximum curve based on the current velocity
-      v_ego = max(self.v_ego, 0.1)  # ensure a value greater than 0 for calculations
-      max_curve = self.max_pred_lat_acc / (v_ego**2)
-
-      # Get the target velocity for the maximum curve
-      self.v_target = (_A_LAT_REG_MAX / max_curve) ** 0.5
+  # ============================================================
+  # state machine
+  # ============================================================
 
   def _update_state_machine(self) -> tuple[bool, bool]:
-    # ENABLED, ENTERING, TURNING, LEAVING, OVERRIDING
+
     if self.state != VisionState.disabled:
-      # longitudinal and feature disable always have priority in a non-disabled state
+
+      # disabled
       if not self.long_enabled or not self.enabled:
         self.state = VisionState.disabled
+
+      # overriding
       elif self.long_override:
         self.state = VisionState.overriding
 
       else:
+
+        # ========================================================
         # ENABLED
+        # ========================================================
+
         if self.state == VisionState.enabled:
-          # Do not enter a turn control cycle if the speed is low.
+
           if self.v_ego <= MIN_V:
             pass
-          # If significant lateral acceleration is predicted ahead, then move to Entering turn state.
-          elif self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
+
+          # apex-aware entering
+          elif (
+            self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH
+            and self.time_to_apex < 5.0
+          ):
             self.state = VisionState.entering
 
+        # ========================================================
         # OVERRIDING
+        # ========================================================
+
         elif self.state == VisionState.overriding:
+
           if not self.long_override:
             self.state = VisionState.enabled
 
+        # ========================================================
         # ENTERING
+        # ========================================================
+
         elif self.state == VisionState.entering:
-          # Transition to Turning if current lateral acceleration is over the threshold.
+
           if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
             self.state = VisionState.turning
-          # Abort if the predicted lateral acceleration drops
-          elif self.max_pred_lat_acc < _ABORT_ENTERING_PRED_LAT_ACC_TH:
+
+          elif (
+            self.max_pred_lat_acc
+            < _ABORT_ENTERING_PRED_LAT_ACC_TH
+          ):
             self.state = VisionState.enabled
 
+        # ========================================================
         # TURNING
+        # ========================================================
+
         elif self.state == VisionState.turning:
-          # Transition to Leaving if current lateral acceleration drops below a threshold.
-          if self.current_lat_acc <= _LEAVING_LAT_ACC_TH:
+
+          future_curve = np.mean(
+            np.abs(self.curvature_plan[10:20])
+          )
+
+          near_curve = np.mean(
+            np.abs(self.curvature_plan[:10])
+          )
+
+          # early exit prediction
+          if (
+            future_curve < near_curve * 0.7
+            and self.current_lat_acc < 2.0
+          ):
             self.state = VisionState.leaving
 
+        # ========================================================
         # LEAVING
+        # ========================================================
+
         elif self.state == VisionState.leaving:
-          # Transition back to Turning if current lateral acceleration goes back over the threshold.
+
           if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
             self.state = VisionState.turning
-          # Finish if current lateral acceleration goes below a threshold.
+
           elif self.current_lat_acc < _FINISH_LAT_ACC_TH:
             self.state = VisionState.enabled
 
+    # ============================================================
     # DISABLED
+    # ============================================================
+
     elif self.state == VisionState.disabled:
+
       if self.long_enabled and self.enabled:
+
         if self.long_override:
           self.state = VisionState.overriding
+
         else:
           self.state = VisionState.enabled
 
@@ -160,44 +310,104 @@ class SmartCruiseControlVision:
 
     return enabled, active
 
+  # ============================================================
+  # solution
+  # ============================================================
+
   def _update_solution(self) -> float:
-    # DISABLED, ENABLED, OVERRIDING
+
+    # ============================================================
+    # DISABLED / ENABLED / OVERRIDING
+    # ============================================================
+
     if self.state not in ACTIVE_STATES:
-      # when not overshooting, calculate v_turn as the speed at the prediction horizon when following
-      # the smooth deceleration.
+
       a_target = self.a_ego
+
+    # ============================================================
     # ENTERING
+    # ============================================================
+
     elif self.state == VisionState.entering:
-      # when not overshooting, target a smooth deceleration in preparation for a sharp turn to come.
-      a_target = np.interp(self.max_pred_lat_acc, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V)
+
+      a_target = np.interp(
+        self.max_pred_lat_acc,
+        _ENTERING_SMOOTH_DECEL_BP,
+        _ENTERING_SMOOTH_DECEL_V
+      )
+
+    # ============================================================
     # TURNING
+    # ============================================================
+
     elif self.state == VisionState.turning:
-      # When turning, we provide a target acceleration that is comfortable for the lateral acceleration felt.
-      a_target = np.interp(self.current_lat_acc, _TURNING_ACC_BP, _TURNING_ACC_V)
+
+      speed_error = self.v_ego - self.v_target
+
+      # already slowed enough
+      if speed_error < 0.5:
+        a_target = 0.1
+
+      else:
+        a_target = np.interp(
+          self.current_lat_acc,
+          _TURNING_ACC_BP,
+          _TURNING_ACC_V
+        )
+
+    # ============================================================
     # LEAVING
+    # ============================================================
+
     elif self.state == VisionState.leaving:
-      # When leaving, we provide a comfortable acceleration to regain speed.
+
       a_target = _LEAVING_ACC
+
     else:
-      raise NotImplementedError(f"SCC-V state not supported: {self.state}")
+      raise NotImplementedError(
+        f"SCC-V state not supported: {self.state}"
+      )
 
     return a_target
 
-  def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float,
-             v_cruise_setpoint: float) -> None:
+  # ============================================================
+  # main update
+  # ============================================================
+
+  def update(
+    self,
+    sm: messaging.SubMaster,
+    long_enabled: bool,
+    long_override: bool,
+    v_ego: float,
+    a_ego: float,
+    v_cruise_setpoint: float
+  ) -> None:
+
     self.long_enabled = long_enabled
     self.long_override = long_override
+
     self.v_ego = v_ego
     self.a_ego = a_ego
+
     self.v_cruise_setpoint = v_cruise_setpoint
 
     self._update_params()
+
     self._update_calculations(sm)
 
-    self.is_enabled, self.is_active = self._update_state_machine()
+    self.is_enabled, self.is_active = (
+      self._update_state_machine()
+    )
+
     self.a_target = self._update_solution()
 
-    self.output_v_target = self.get_v_target_from_control()
-    self.output_a_target = self.get_a_target_from_control()
+    self.output_v_target = (
+      self.get_v_target_from_control()
+    )
+
+    self.output_a_target = (
+      self.get_a_target_from_control()
+    )
 
     self.frame += 1
