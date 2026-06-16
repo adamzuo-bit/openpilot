@@ -1,0 +1,6 @@
+ M panda/board/obj/panda_h7.bin.signed
+ M selfdrive/pandad/pandad
+ M selfdrive/pandad/pandad.cc
+ M selfdrive/pandad/pandad.py
+ M system/hardware/tici/hardware.py
+?? nopanda_fix.patch
