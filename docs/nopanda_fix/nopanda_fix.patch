@@ -1,0 +1,274 @@
+diff --git a/panda/board/obj/panda_h7.bin.signed b/panda/board/obj/panda_h7.bin.signed
+index 3493b2f..06879b6 100644
+Binary files a/panda/board/obj/panda_h7.bin.signed and b/panda/board/obj/panda_h7.bin.signed differ
+diff --git a/selfdrive/pandad/pandad b/selfdrive/pandad/pandad
+old mode 100644
+new mode 100755
+index c11ae36..10ca508
+Binary files a/selfdrive/pandad/pandad and b/selfdrive/pandad/pandad differ
+diff --git a/selfdrive/pandad/pandad.cc b/selfdrive/pandad/pandad.cc
+index a771326..8ee296b 100644
+--- a/selfdrive/pandad/pandad.cc
++++ b/selfdrive/pandad/pandad.cc
+@@ -1,7 +1,6 @@
+ #include "selfdrive/pandad/pandad.h"
+ 
+ #include <array>
+-#include <atomic>
+ #include <bitset>
+ #include <cassert>
+ #include <cerrno>
+@@ -24,13 +23,6 @@
+ 
+ ExitHandler do_exit;
+ 
+-struct HwmonState {
+-  std::atomic<uint32_t> voltage{0};
+-  std::atomic<uint32_t> current{0};
+-  std::atomic<bool> initialized{false};
+-};
+-
+-HwmonState hwmon_state;
+ 
+ bool check_connected(Panda *panda) {
+   if (!panda->connected()) {
+@@ -126,25 +118,6 @@ void can_recv(Panda *panda, PubMaster *pm) {
+   }
+ }
+ 
+-void hwmon_thread() {
+-  util::set_thread_name("pandad_hwmon");
+-
+-  while (!do_exit) {
+-    double read_time = millis_since_boot();
+-    uint32_t voltage = Hardware::get_voltage();
+-    uint32_t current = Hardware::get_current();
+-    read_time = millis_since_boot() - read_time;
+-    if (read_time > 50) {
+-      LOGW("reading hwmon took %lfms", read_time);
+-    }
+-
+-    hwmon_state.voltage.store(voltage);
+-    hwmon_state.current.store(current);
+-    hwmon_state.initialized.store(true);
+-
+-    util::sleep_for(500);
+-  }
+-}
+ 
+ void fill_panda_state(cereal::PandaState::Builder &ps, cereal::PandaState::PandaType hw_type, const health_t &health) {
+   ps.setVoltage(health.voltage_pkt);
+@@ -278,10 +251,6 @@ std::optional<bool> send_panda_states(PubMaster *pm, Panda *panda, bool is_onroa
+ }
+ 
+ void send_peripheral_state(Panda *panda, PubMaster *pm) {
+-  if (!hwmon_state.initialized.load()) {
+-    return;
+-  }
+-
+   // build msg
+   MessageBuilder msg;
+   auto evt = msg.initEvent();
+@@ -290,8 +259,13 @@ void send_peripheral_state(Panda *panda, PubMaster *pm) {
+   auto ps = evt.initPeripheralState();
+   ps.setPandaType(panda->hw_type);
+ 
+-  ps.setVoltage(hwmon_state.voltage.load());
+-  ps.setCurrent(hwmon_state.current.load());
++  double read_time = millis_since_boot();
++  ps.setVoltage(Hardware::get_voltage());
++  ps.setCurrent(Hardware::get_current());
++  read_time = millis_since_boot() - read_time;
++  if (read_time > 50) {
++    LOGW("reading hwmon took %lfms", read_time);
++  }
+ 
+   // fall back to panda's voltage and current measurement
+   if (ps.getVoltage() == 0 && ps.getCurrent() == 0) {
+@@ -413,12 +387,12 @@ void pandad_run(Panda *panda) {
+   const bool spoofing_started = getenv("STARTED") != nullptr;
+   const bool fake_send = getenv("FAKESEND") != nullptr;
+ 
+-  // Start helper threads for event-driven sendcan and slow non-Panda reads.
++  // Start the CAN send thread
+   std::thread send_thread(can_send_thread, panda, fake_send);
+-  std::thread hardware_thread(hwmon_thread);
+ 
+   RateKeeper rk("pandad", 100);
+-  SubMaster sm({"selfdriveState", "deviceState", "selfdriveStateSP"});
++  Params params;
++  SubMaster sm({"selfdriveState", "selfdriveStateSP"});
+   PubMaster pm({"can", "pandaStates", "peripheralState"});
+   PandaSafety panda_safety(panda);
+   bool engaged = false;
+@@ -439,9 +413,7 @@ void pandad_run(Panda *panda) {
+     if (rk.frame() % 10 == 0) {
+       sm.update(0);
+       engaged = sm.allAliveAndValid({"selfdriveState"}) && sm["selfdriveState"].getSelfdriveState().getEnabled();
+-      if (sm.updated("deviceState")) {
+-        is_onroad = sm["deviceState"].getDeviceState().getStarted();
+-      }
++      is_onroad = params.getBool("IsOnroad");
+       engaged_mads = process_mads_heartbeat(&sm);
+       always_offroad = panda_safety.getOffroadMode();
+       process_panda_state(panda, &pm, engaged, engaged_mads, is_onroad, spoofing_started, always_offroad);
+@@ -475,7 +447,6 @@ void pandad_run(Panda *panda) {
+   }
+ 
+   send_thread.join();
+-  hardware_thread.join();
+ }
+ 
+ void pandad_main_thread(std::string serial) {
+diff --git a/selfdrive/pandad/pandad.py b/selfdrive/pandad/pandad.py
+index 8b45865..f507556 100644
+--- a/selfdrive/pandad/pandad.py
++++ b/selfdrive/pandad/pandad.py
+@@ -21,8 +21,15 @@ def get_expected_signature(panda: Panda) -> bytes:
+     cloudlog.exception("Error computing expected signature")
+     return b""
+ 
+-def flash_panda(panda_serial: str):
+-  panda = Panda(panda_serial)
++# FIX 1: flash_panda() 必須回傳 Panda 物件（不能 close 後回傳 None）
++#         同時加入 PandaProtocolMismatch 的 try/except 處理
++def flash_panda(panda_serial: str) -> Panda:
++  try:
++    panda = Panda(panda_serial)
++  except PandaProtocolMismatch:
++    cloudlog.warning("detected protocol mismatch, reflashing panda")
++    HARDWARE.recover_internal_panda()
++    raise
+ 
+   fw_signature = get_expected_signature(panda)
+   internal_panda = panda.is_internal()
+@@ -53,7 +60,8 @@ def flash_panda(panda_serial: str):
+     cloudlog.info("Version mismatch after flashing, exiting")
+     raise AssertionError
+ 
+-  panda.close()
++  # FIX 1: 回傳 panda 物件，不要 close()
++  return panda
+ 
+ 
+ def main() -> None:
+@@ -69,45 +77,46 @@ def main() -> None:
+   do_exit = False
+   signal.signal(signal.SIGINT, signal_handler)
+ 
+-  # check health for lost heartbeat
+-  try:
+-    for s in Panda.list():
+-      with Panda(s) as p:
+-        health = p.health()
+-        if p.is_internal() and health["heartbeat_lost"]:
+-          Params().put_bool("PandaHeartbeatLost", True, block=True)
+-          cloudlog.event("heartbeat lost", deviceState=health)
+-  except Exception:
+-    cloudlog.exception("pandad.uncaught_exception")
+-
+   count = 0
++  # FIX 2: 在 while 迴圈前初始化所有必要變數
++  first_run = True
++  params = Params()
++  no_internal_panda_count = 0
++
+   while not do_exit:
+     try:
+-      cloudlog.event("pandad.flash_and_connect", count=count)
+-      if (count % 2) == 0:
+-        HARDWARE.reset_internal_panda()
+-      else:
+-        HARDWARE.recover_internal_panda()
+       count += 1
++      cloudlog.event("pandad.flash_and_connect", count=count)
++      pass  # PandaSignatures not in params_keys
++
++      # FIX 3: 用智慧型重試邏輯取代每次固定 reset/recover
++      #         只有在確認找不到 panda 時才做 reset/recover
++      if no_internal_panda_count > 0:
++        if no_internal_panda_count == 3:
++          cloudlog.info("No pandas found, putting internal panda into DFU")
++          HARDWARE.recover_internal_panda()
++        else:
++          cloudlog.info("No pandas found, resetting internal panda")
++          HARDWARE.reset_internal_panda()
++        time.sleep(3)  # wait to come back up
+ 
+       # Flash all Pandas in DFU mode
+-      for serial in PandaDFU.list():
+-        cloudlog.info(f"Panda in DFU mode found, flashing recovery {serial}")
+-        PandaDFU(serial).recover()
++      dfu_serials = PandaDFU.list()
++      if len(dfu_serials) > 0:
++        for serial in dfu_serials:
++          cloudlog.info(f"Panda in DFU mode found, flashing recovery {serial}")
++          PandaDFU(serial).recover()
+         time.sleep(1)
+ 
+       panda_serials = Panda.list()
+-      if len(panda_serials):
+-        # custom flasher for xnor's Rivian Longitudinal Upgrade Kit
+-        flash_rivian_long(panda_serials)
+-        # find the internal supported panda (e.g. skip external Black Panda)
+-        panda_serials = check_panda_support(panda_serials)
++      # FIX 4: 若找不到 panda 就遞增計數並 continue，不要繼續往下跑
++      if len(panda_serials) == 0:
++        no_internal_panda_count += 1
++        continue
+ 
+-        assert len(panda_serials) == 1
+-        cloudlog.info(f"{len(panda_serials)} panda found, connecting - {panda_serials}")
+-        flash_panda(panda_serials[0])
++      cloudlog.info(f"{len(panda_serials)} panda(s) found, connecting - {panda_serials}")
+ 
+-      # Flash pandas
++      # Flash pandas（FIX 5: 移除重複呼叫 flash_panda 和不存在的 flash_rivian_long/check_panda_support）
+       pandas: list[Panda] = []
+       for serial in panda_serials:
+         pandas.append(flash_panda(serial))
+@@ -128,7 +137,7 @@ def main() -> None:
+       panda_serials = [p.get_usb_serial() for p in pandas]
+ 
+       # log panda fw versions
+-      params.put("PandaSignatures", b','.join(p.get_signature() for p in pandas))
++      pass  # PandaSignatures not in params_keys
+ 
+       for panda in pandas:
+         # check health for lost heartbeat
+@@ -151,8 +160,10 @@ def main() -> None:
+     except (usb1.USBErrorNoDevice, usb1.USBErrorPipe):
+       # a panda was disconnected while setting everything up. let's try again
+       cloudlog.exception("Panda USB exception while setting up")
++      continue  # FIX 6: 加上 continue，與 dev1 一致
+     except PandaProtocolMismatch:
+       cloudlog.exception("pandad.protocol_mismatch")
++      continue  # FIX 6: 加上 continue，與 dev1 一致
+     except Exception:
+       cloudlog.exception("pandad.uncaught_exception")
+       continue
+diff --git a/system/hardware/tici/hardware.py b/system/hardware/tici/hardware.py
+index 34c426d..bee48ff 100644
+--- a/system/hardware/tici/hardware.py
++++ b/system/hardware/tici/hardware.py
+@@ -423,7 +423,7 @@ class Tici(HardwareBase):
+ 
+     gpio_set(GPIO.STM_RST_N, 1)
+     gpio_set(GPIO.STM_BOOT0, 0)
+-    time.sleep(0.01)
++    time.sleep(1)
+     gpio_set(GPIO.STM_RST_N, 0)
+ 
+   def recover_internal_panda(self):
+@@ -432,9 +432,9 @@ class Tici(HardwareBase):
+ 
+     gpio_set(GPIO.STM_RST_N, 1)
+     gpio_set(GPIO.STM_BOOT0, 1)
+-    time.sleep(0.01)
++    time.sleep(0.5)
+     gpio_set(GPIO.STM_RST_N, 0)
+-    time.sleep(0.01)
++    time.sleep(0.5)
+     gpio_set(GPIO.STM_BOOT0, 0)
+ 
+   def booted(self):
