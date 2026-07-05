@@ -12,6 +12,12 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
+# ==============================
+# Chevron Metrics V2 可調參數
+# 修改 FONT_SIZE 即可調整字體大小
+# ==============================
+FONT_SIZE = 50
+
 
 class ChevronOptions:
   OFF = 0
@@ -56,6 +62,10 @@ class ChevronMetrics:
     if not text_lines:
       return
 
+    # Chevron Metrics V2：
+    # All 模式改為單行水平顯示
+    if ui_state.chevron_metrics == ChevronOptions.ALL and len(text_lines) == 3:
+      text_lines = [f"{text_lines[2]}    {text_lines[0]}    {text_lines[1]}"]
     self._render_text_lines(text_lines, chevron_x, chevron_y, sz, rect)
 
   @staticmethod
@@ -69,13 +79,21 @@ class ChevronMetrics:
       unit = "m" if ui_state.is_metric else "ft"
       if not ui_state.is_metric:
         val *= 3.28084
-      text_lines.append(f"{val:.0f} {unit}")
+      # Chevron Metrics V2：
+      # 距離維持使用 m / ft
+      distance_text = f"{val:.0f} {unit}"
+      text_lines.append(distance_text)
 
     # Speed
     if ui_state.chevron_metrics == ChevronOptions.SPEED_ONLY or ui_state.chevron_metrics == ChevronOptions.ALL:
       multiplier = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
       val = max(0.0, (v_rel + v_ego) * multiplier)
-      unit = "km/h" if ui_state.is_metric else "mph"
+      # Chevron Metrics V2：
+      # All 模式速度顯示 km，其餘模式維持 km/h
+      if ui_state.chevron_metrics == ChevronOptions.ALL:
+        unit = "km" if ui_state.is_metric else "mi"
+      else:
+        unit = "km/h" if ui_state.is_metric else "mph"
       text_lines.append(f"{val:.0f} {unit}")
 
     # Time to collision
@@ -89,7 +107,7 @@ class ChevronMetrics:
   def _render_text_lines(self, text_lines: list[str], chevron_x: float, chevron_y: float,
                          sz: float, rect: rl.Rectangle):
     """Render text lines with proper centering and positioning"""
-    font_size = 40
+    font_size = FONT_SIZE
     line_height = 50
     margin = 20
 
