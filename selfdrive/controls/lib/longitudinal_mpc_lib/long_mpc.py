@@ -370,11 +370,22 @@ class LongitudinalMpc:
       else:
         self.lead_start_counter = 0
 
-      # 尚未達到設定延遲時間，維持停止狀態
+      # 尚未達到設定延遲時間，維持前車鎖定
       if self.lead_start_counter < START_DELAY_FRAMES:
 
-        x_lead_traj[:] = radar_lead.dRel  # 鎖定前車距離
-        v_lead_traj[:] = radar_lead.vLead # 鎖定前車速度
+        # ======================================================
+        # 前車鎖定 V1
+        #
+        # 同時鎖定「位置」與「速度」
+        #
+        # x_lead_traj：
+        #   鎖定前車位置，避免 Model 預測前車滑行造成 MPC 提前解除停止
+        #
+        # v_lead_traj：
+        #   鎖定前車速度，避免 MPC 認為前車已開始加速
+        # ======================================================
+        x_lead_traj[:] = radar_lead.dRel      # 鎖定前車位置 (建議保留)
+        v_lead_traj[:] = radar_lead.vLead     # 鎖定前車速度 (建議保留)
 
     x_lead_mpc = np.maximum.accumulate(np.interp(T_IDXS, LEAD_T_IDXS_MODEL, x_lead_traj))
     v_lead_mpc = np.interp(T_IDXS, LEAD_T_IDXS_MODEL, v_lead_traj)
