@@ -60,6 +60,14 @@ CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.2
 MIN_X_LEAD_FACTOR = 0.5
 
+# ============================================================
+# 前車起步延遲 V2
+# ============================================================
+START_DELAY_FRAMES = 12      # 起步延遲(20Hz)：10=0.5秒、12=0.6秒、16=0.8秒、20=1.0秒
+START_RADAR_SPEED = 0.5       # Radar 起步速度門檻(m/s)，越大越晚開始計時
+START_MODEL_MOVE = 0.8        # Model 預測位移門檻(m)，越大越晚開始計時
+
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -278,6 +286,9 @@ class LongitudinalMpc:
     # 前車速度歷史(最近5幀)，用來判斷是否持續減速
     self.lead_v_history = []
 
+    # 前車起步延遲計數器
+    self.lead_start_counter = 0      # 連續偵測前車起步的幀數
+
   def set_cost_weights(self, cost_weights, constraint_cost_weights):
     W = np.asfortranarray(np.diag(cost_weights))
     for i in range(N):
@@ -329,8 +340,7 @@ class LongitudinalMpc:
     min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead_0) * (v_ego - v_lead_0) / (-ACCEL_MIN * 2)
     x_lead_traj[0] = max(x_lead_traj[0], min_x_lead)
     v_lead_traj = np.clip(v_lead_traj, 0.0, 1e8)
-
-    # ============================================================
+# ============================================================
     # 前車鎖定測試 V1
     #
     # 功能：
@@ -348,11 +358,23 @@ class LongitudinalMpc:
     if (
       radar_lead.status and
       radar_lead.dRel < 12.0 and
-      v_ego < 2.0 and
-      radar_lead.vLead < 0.5
+      v_ego < 2.0
     ):
-      v_lead_cap = max(radar_lead.vLead, 0.0)
-      v_lead_traj = np.minimum(v_lead_traj, v_lead_cap + 0.3)
+
+      # Radar 與 Model 同時確認前車開始起步
+      if (
+        radar_lead.vLead > START_RADAR_SPEED and                      # Radar 已確認前車開始移動
+        (model_lead.x[1] - model_lead.x[0]) > START_MODEL_MOVE        # Model 也預測前車開始離開
+      ):
+        self.lead_start_counter += 1
+      else:
+        self.lead_start_counter = 0
+
+      # 尚未達到設定延遲時間，維持停止狀態
+      if self.lead_start_counter < START_DELAY_FRAMES:
+
+        x_lead_traj[:] = radar_lead.dRel  # 鎖定前車距離
+        v_lead_traj[:] = radar_lead.vLead # 鎖定前車速度
 
     x_lead_mpc = np.maximum.accumulate(np.interp(T_IDXS, LEAD_T_IDXS_MODEL, x_lead_traj))
     v_lead_mpc = np.interp(T_IDXS, LEAD_T_IDXS_MODEL, v_lead_traj)
