@@ -552,7 +552,7 @@ class LongitudinalMpc:
     # 最終限制 = 距離係數 × 速差係數
     # =========================
 
-    if lead.status:
+    if lead.status and ((v_ego - lead.vLead) * 3.6 > 1.0): # 只有自己比前車快1km時，才限制加速
 
       d = float(lead.dRel)
 
