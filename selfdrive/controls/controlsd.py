@@ -51,7 +51,7 @@ class Controls(ControlsExt):
     self.curvature = 0.0
     self.desired_curvature = 0.0
 
-    # 抑制左偏 V2 (Roadside Left Bias Suppression)
+    # Counts persistent model-path drift left of a reliable ego-lane centre.
     self.roadside_left_bias_counter = 0
 
     self.pose_calibrator = PoseCalibrator()
@@ -143,41 +143,43 @@ class Controls(ControlsExt):
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
 
-    # 抑制左偏 V2 (Roadside Left Bias Suppression)
+    # Right-boundary guard. The lateral convention here is left-positive and
+    # right-negative. It only acts when both ego-lane lines are reliable and
+    # the model's predicted path is persistently left of their centre.
     try:
+      left_prob = float(model_v2.laneLineProbs[1]) if len(model_v2.laneLineProbs) > 1 else 0.0
       right_prob = float(model_v2.laneLineProbs[2]) if len(model_v2.laneLineProbs) > 2 else 0.0
-      right_y = float(model_v2.laneLines[2].y[0]) if len(model_v2.laneLines) > 2 and len(model_v2.laneLines[2].y) > 0 else 0.0
+      left_line = model_v2.laneLines[1] if len(model_v2.laneLines) > 1 else None
+      right_line = model_v2.laneLines[2] if len(model_v2.laneLines) > 2 else None
+      position = model_v2.position
 
-      if (CS.vEgo < 70 * CV.KPH_TO_MS and
-          right_prob > 0.6 and
-          right_y > 1.6):
+      offsets = []
+      if left_line is not None and right_line is not None and left_prob > 0.75 and right_prob > 0.75:
+        line_n = min(len(left_line.x), len(left_line.y), len(right_line.y))
+        for path_x, path_y in zip(position.x, position.y):
+          # Lane lines and the model path use different x grids. Select the
+          # nearest lane-line sample over a useful forward range.
+          if 8.0 <= path_x <= 30.0 and line_n:
+            line_i = min(range(line_n), key=lambda i: abs(left_line.x[i] - path_x))
+            left_y = float(left_line.y[line_i])
+            right_y = float(right_line.y[line_i])
+            lane_width = left_y - right_y
+            if right_y < -1.0 and 2.7 <= lane_width <= 4.5:
+              lane_center_y = (left_y + right_y) * 0.5
+              offsets.append(float(path_y) - lane_center_y)
 
-        curvature_delta = new_desired_curvature - self.desired_curvature
-
-        if curvature_delta < -0.00025:
-          self.roadside_left_bias_counter = min(self.roadside_left_bias_counter + 1, 30)
-        else:
-          self.roadside_left_bias_counter = max(self.roadside_left_bias_counter - 1, 0)
-
-        if curvature_delta < -0.00025:
-
-          if self.roadside_left_bias_counter >= 25:
-            suppress_factor = 0.10
-          elif self.roadside_left_bias_counter >= 20:
-            suppress_factor = 0.20
-          elif self.roadside_left_bias_counter >= 15:
-            suppress_factor = 0.40
-          else:
-            suppress_factor = 1.00
-
-          if suppress_factor < 1.0:
-            new_desired_curvature = (
-              self.desired_curvature +
-              curvature_delta * suppress_factor
-            )
+      # A positive offset means the model plans to drive left of lane centre.
+      model_left_of_lane = len(offsets) >= 3 and sum(offsets) / len(offsets) > 0.35
+      if CS.vEgo < 70 * CV.KPH_TO_MS and model_left_of_lane:
+        self.roadside_left_bias_counter = min(self.roadside_left_bias_counter + 1, 30)
       else:
         self.roadside_left_bias_counter = 0
 
+      curvature_delta = new_desired_curvature - self.desired_curvature
+      # After 150 ms of confirmed left path bias, block only additional
+      # leftward curvature. Rightward correction remains available.
+      if self.roadside_left_bias_counter >= 15 and curvature_delta > 0.00025:
+        new_desired_curvature = self.desired_curvature
     except Exception:
       self.roadside_left_bias_counter = 0
 
