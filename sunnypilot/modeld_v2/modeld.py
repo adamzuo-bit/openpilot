@@ -92,6 +92,8 @@ class ModelState(ModelStateBase):
     self.LONG_SMOOTH_SECONDS = float(overrides.get('long', ".0"))
     self.MIN_LAT_CONTROL_SPEED = 0.3
     self.PLANPLUS_CONTROL: float = 1.0
+    self.lane_centering_counter = 0
+    self.lane_centering_direction = 0
 
     pkl_path = _find_driving_pkl(model_bundle)
     assert pkl_path is not None, "No driving pkl found — all models must be compiled with compile_modeld.py"
@@ -238,6 +240,72 @@ class ModelState(ModelStateBase):
 
     return outputs
 
+  def apply_lane_centering(self, desired_curvature: float, prev_curvature: float,
+                           model_output: dict[str, np.ndarray], plan: np.ndarray, v_ego: float) -> float:
+    """Block extra steering away from the centre of a reliable, straight ego lane."""
+    try:
+      lane_lines = model_output.get('lane_lines')
+      lane_probs = model_output.get('lane_lines_prob')
+      desire_state = model_output.get('desire_state')
+      if lane_lines is None or lane_probs is None or desire_state is None or v_ego < 3.0:
+        raise ValueError('no reliable lane-centering inputs')
+
+      desires = desire_state[0].reshape(-1)
+      if float(desires[3]) + float(desires[4]) > 0.05:
+        raise ValueError('lane change in progress')
+
+      probs = lane_probs[0, 1::2] if lane_probs.ndim == 2 else lane_probs[1::2]
+      if len(probs) <= 2 or float(probs[1]) <= 0.75 or float(probs[2]) <= 0.75:
+        raise ValueError('ego lane lines are not reliable')
+
+      left_line = lane_lines[0, 1]
+      right_line = lane_lines[0, 2]
+      line_x = left_line[:, 0]
+      left_y = left_line[:, 1]
+      right_y = right_line[:, 1]
+      path_x = plan[:, Plan.POSITION][:, 0]
+      path_y = plan[:, Plan.POSITION][:, 1]
+
+      offsets = []
+      lane_centres = []
+      for x, y in zip(path_x, path_y):
+        if 8.0 <= x <= 30.0:
+          i = int(np.argmin(np.abs(line_x - x)))
+          lane_width = float(left_y[i] - right_y[i])
+          if right_y[i] < -1.0 and 2.7 <= lane_width <= 4.5:
+            centre = float((left_y[i] + right_y[i]) * 0.5)
+            offsets.append(float(y - centre))
+            lane_centres.append(centre)
+
+      # Only operate on straight road segments; bends retain the model action.
+      if len(lane_centres) < 3 or abs(lane_centres[-1] - lane_centres[0]) > 0.35:
+        raise ValueError('not a straight lane segment')
+
+      offset = float(np.mean(offsets))
+      if abs(offset) > 0.25:
+        direction = 1 if offset > 0.0 else -1
+        if direction == self.lane_centering_direction:
+          self.lane_centering_counter = min(self.lane_centering_counter + 1, 6)
+        else:
+          self.lane_centering_direction = direction
+          self.lane_centering_counter = 1
+      else:
+        self.lane_centering_counter = 0
+        self.lane_centering_direction = 0
+
+      # modeld runs at 20 Hz: 3 frames is 150 ms. Positive curvature is left.
+      curvature_delta = desired_curvature - prev_curvature
+      if self.lane_centering_counter >= 3:
+        if self.lane_centering_direction > 0 and curvature_delta > 0.00025:
+          return prev_curvature
+        if self.lane_centering_direction < 0 and curvature_delta < -0.00025:
+          return prev_curvature
+    except Exception:
+      self.lane_centering_counter = 0
+      self.lane_centering_direction = 0
+
+    return desired_curvature
+
   def get_action_from_model(self, model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
                             lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
     plan = model_output['plan'][0]
@@ -252,6 +320,9 @@ class ModelState(ModelStateBase):
         desired_curvature = smooth_value(desired_curvature, prev_action.desiredCurvature, self.LAT_SMOOTH_SECONDS)
       else:
         desired_curvature = prev_action.desiredCurvature
+
+    desired_curvature = self.apply_lane_centering(desired_curvature, prev_action.desiredCurvature,
+                                                   model_output, plan, v_ego)
 
     return log.ModelDataV2.Action(desiredCurvature=float(desired_curvature),desiredAcceleration=float(desired_accel), shouldStop=bool(should_stop))
 
