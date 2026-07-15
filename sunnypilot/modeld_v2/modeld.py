@@ -269,7 +269,7 @@ class ModelState(ModelStateBase):
       offsets = []
       lane_centres = []
       for x, y in zip(path_x, path_y):
-        if 8.0 <= x <= 30.0:
+        if 8.0 <= x <= 50.0:
           i = int(np.argmin(np.abs(line_x - x)))
           lane_width = float(left_y[i] - right_y[i])
           if right_y[i] < -1.0 and 2.7 <= lane_width <= 4.5:
