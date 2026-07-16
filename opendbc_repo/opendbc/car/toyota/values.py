@@ -213,7 +213,7 @@ class CAR(Platforms):
       ToyotaCarDocs("Toyota Highlander 2017-19", video="https://www.youtube.com/watch?v=0wS0wXSLzoo"),
       ToyotaCarDocs("Toyota Highlander Hybrid 2017-19"),
     ],
-    CarSpecs(mass=4516. * CV.LB_TO_KG, wheelbase=2.8194, steerRatio=16.0, tireStiffnessFactor=0.8),
+    CarSpecs(mass=3693. * CV.LB_TO_KG, wheelbase=2.69, steerRatio=16.88, tireStiffnessFactor=0.5533),
     dbc_dict('toyota_tnga_k_pt_generated', 'toyota_adas'),
     flags=ToyotaFlags.NO_STOP_TIMER,
   )
