@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>openpilot</title>
+  <link rel="stylesheet" href="/static/css/opui.css?v=45" />
+</head>
+<body>
+  <div id="bootstrap-banner" class="opui-bootstrap-banner" hidden></div>
+  <div id="opui-viewport">
+  <div id="app" class="opui" data-screen="home">
+    <!-- Offroad / settings sidebar (left 500px when settings) -->
+    <aside id="settings-sidebar" class="opui-sidebar" hidden>
+      <button type="button" id="btn-close-settings" class="opui-close" aria-label="Close"></button>
+      <nav class="opui-nav" id="nav"></nav>
+    </aside>
+
+    <!-- Metrics sidebar (300px) — offroad home + onroad -->
+    <aside id="metrics-sidebar" class="opui-metrics-sidebar">
+      <button type="button" id="btn-sidebar-settings" class="opui-sidebar-btn opui-sidebar-btn--settings" title="设置"></button>
+      <div id="sidebar-network" class="opui-sidebar-network">
+        <div class="opui-net-dots"></div>
+        <div class="opui-net-type">Wi-Fi</div>
+      </div>
+      <div id="metrics" class="opui-side-metrics"></div>
+      <button type="button" id="sidebar-mic" class="opui-sidebar-mic" hidden title="录音中"></button>
+      <button type="button" id="btn-sidebar-bottom" class="opui-sidebar-btn opui-sidebar-btn--home" title=""></button>
+    </aside>
+
+    <main id="main" class="opui-main">
+      <!-- HOME (offroad) -->
+      <section id="screen-home" class="opui-screen opui-screen--home">
+        <header class="opui-home-header">
+          <div class="opui-home-pills" id="home-pills" hidden>
+            <button type="button" id="home-pill-update" class="opui-home-pill opui-home-pill--update" hidden>UPDATE</button>
+            <button type="button" id="home-pill-alerts" class="opui-home-pill opui-home-pill--alerts" hidden></button>
+          </div>
+          <div id="home-version" class="opui-home-version">
+            <span id="home-brand" class="opui-home-brand">sunnypilot</span>
+            <span id="home-desc" class="opui-home-desc"></span>
+          </div>
+        </header>
+        <div id="home-overlay" class="opui-home-overlay" hidden>
+          <div class="opui-home-overlay-card">
+            <div id="home-overlay-body" class="opui-home-overlay-body"></div>
+            <div id="home-overlay-actions" class="opui-home-overlay-actions"></div>
+          </div>
+        </div>
+        <div class="opui-home-content">
+          <div class="opui-home-col opui-home-col--left">
+            <div id="home-prime" class="opui-home-prime-wrap"></div>
+            <button type="button" id="btn-home-camera-preview" class="opui-home-camera-preview">
+              行车画面预览
+            </button>
+          </div>
+          <div class="opui-home-col opui-home-col--right">
+            <button type="button" id="home-exp-banner" class="opui-home-exp" hidden>
+              <span class="opui-home-exp-label"></span>
+              <img class="opui-home-exp-icon" src="" alt="" />
+            </button>
+            <div id="home-setup" class="opui-home-setup-wrap"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section id="screen-settings" class="opui-screen" hidden>
+        <header class="opui-panel-header">
+          <h2 id="panel-title">Settings</h2>
+        </header>
+        <div id="panel-content" class="opui-panel"></div>
+      </section>
+
+      <!-- ONROAD -->
+      <section id="screen-onroad" class="opui-screen opui-screen--onroad" hidden>
+        <div id="camera-wrap" class="opui-camera-wrap">
+          <video id="road-video" class="opui-camera-video" autoplay playsinline muted></video>
+          <div id="camera-fallback" class="opui-camera-fallback" hidden>
+            <div class="opui-camera-fallback__spinner" aria-hidden="true"></div>
+            <p id="camera-status-text">相机加载中…</p>
+          </div>
+        </div>
+        <div id="model-overlay" class="opui-model-overlay" hidden></div>
+        <div id="hud" class="opui-hud">
+        <div class="opui-hud-gradient" aria-hidden="true"></div>
+        <div id="hud-set-speed" class="opui-hud-cruise" hidden>
+          <div class="opui-hud-cruise-max">MAX</div>
+          <div id="set-speed-val" class="opui-hud-cruise-val">–</div>
+        </div>
+        <div id="hud-speed-limit-wrap" class="opui-hud-sla" hidden>
+          <span id="hud-speed-limit"></span>
+        </div>
+        <div id="hud-road-name" class="opui-hud-road" hidden></div>
+        <div id="hud-blinker-l" class="opui-blinker opui-blinker--l" hidden>◀</div>
+        <div id="hud-blinker-r" class="opui-blinker opui-blinker--r" hidden>▶</div>
+        <div id="hud-bsl" class="opui-bsl opui-bsl--l" hidden></div>
+        <div id="hud-bsr" class="opui-bsl opui-bsl--r" hidden></div>
+        <div id="hud-scc-v" class="opui-hud-scc" hidden>SCC-V</div>
+        <div id="hud-scc-m" class="opui-hud-scc opui-hud-scc--map" hidden>SCC-M</div>
+        <div id="hud-rocket" class="opui-rocket" hidden></div>
+        <div id="dm-arc-wrap" class="opui-dm-wrap" hidden>
+        <svg id="dm-arc" class="opui-dm-arc" viewBox="0 0 192 192">
+          <circle class="dm-arc-bg" cx="96" cy="96" r="80" fill="rgba(0,0,0,0.65)"/>
+          <circle class="dm-arc-fill" cx="96" cy="96" r="68" fill="none" stroke="#80d8a6" stroke-width="8"
+            stroke-linecap="round" transform="rotate(-90 96 96)" stroke-dasharray="0 300"/>
+          <circle class="dm-arc-h" cx="96" cy="96" r="58" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="4"
+            stroke-linecap="round" transform="rotate(0 96 96)" stroke-dasharray="0 300"/>
+          <circle class="dm-arc-v" cx="96" cy="96" r="58" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="4"
+            stroke-linecap="round" transform="rotate(90 96 96)" stroke-dasharray="0 300"/>
+        </svg>
+        </div>
+        <div id="hud-circular-alert" class="opui-hud-circular" hidden>
+          <div class="opui-hud-circular-ring" aria-hidden="true"></div>
+          <img id="hud-circular-img" class="opui-hud-circular-img" alt="" hidden />
+          <div id="hud-circular-text" class="opui-hud-circular-text" hidden></div>
+          <div id="hud-circular-stopped" class="opui-hud-circular-stopped" hidden>STOPPED</div>
+          <div id="hud-circular-timer" class="opui-hud-circular-timer" hidden>0:00</div>
+        </div>
+        <div class="opui-hud-speed-block">
+          <span id="hud-speed">0</span>
+          <span id="hud-unit" class="opui-hud-unit">km/h</span>
+        </div>
+        <button type="button" id="btn-experimental" class="opui-exp-btn" hidden title="Experimental">
+          <img id="exp-icon" class="opui-exp-icon" src="" alt="" />
+        </button>
+        <div class="opui-hud-bottom-fade" aria-hidden="true"></div>
+        </div>
+        <div id="dev-ui-bottom" class="opui-dev-ui-bottom" hidden></div>
+        <div id="dev-ui-right" class="opui-dev-ui-right" hidden></div>
+        <canvas id="torque-bar-canvas" class="opui-torque-bar" hidden></canvas>
+        <div id="alert-bar" class="opui-alert" hidden>
+          <div class="opui-alert__inner">
+            <span id="alert-text1" class="opui-alert__t1"></span>
+            <span id="alert-text2" class="opui-alert__t2"></span>
+          </div>
+        </div>
+        <div id="border" class="opui-border" aria-hidden="true">
+          <div class="opui-border__outer"></div>
+          <div class="opui-border__inner opui-border--disengaged"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="opui-toast" hidden></div>
+    <dialog id="confirm-dialog" class="opui-dialog">
+      <p id="confirm-msg"></p>
+      <div class="opui-dialog-actions">
+        <button type="button" id="confirm-cancel" class="opui-btn">取消</button>
+        <button type="button" id="confirm-ok" class="opui-btn opui-btn--primary">确认</button>
+      </div>
+    </dialog>
+
+    <div id="modal-confirm" class="opui-modal" hidden>
+      <div class="opui-modal-card opui-modal-card--confirm opui-modal-card--dialog">
+        <div id="modal-confirm-msg" class="opui-modal-body opui-modal-scroll"></div>
+        <div class="opui-modal-footer opui-modal-actions opui-modal-actions--split">
+          <button type="button" id="modal-confirm-cancel" class="opui-btn opui-btn--dialog">Cancel</button>
+          <button type="button" id="modal-confirm-ok" class="opui-btn opui-btn--dialog opui-btn--primary">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-keyboard" class="opui-modal opui-modal--keyboard" hidden>
+      <div class="opui-modal-card opui-modal-card--dialog opui-modal-card--keyboard">
+        <div id="keyboard-title" class="opui-modal-title"></div>
+        <div id="keyboard-display" class="opui-keyboard-display"></div>
+        <div id="keyboard-grid" class="opui-keyboard-grid"></div>
+        <div class="opui-modal-footer opui-modal-actions opui-modal-actions--split">
+          <button type="button" id="keyboard-cancel" class="opui-btn opui-btn--dialog">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-tree" class="opui-modal" hidden>
+      <div class="opui-modal-card opui-modal-card--tree">
+        <div class="opui-tree-header">
+          <div id="tree-title" class="opui-modal-title"></div>
+          <div id="tree-search-wrap" class="opui-tree-search-wrap"><input id="tree-search" class="opui-tree-search" type="search" autocomplete="off" /></div>
+        </div>
+        <div id="tree-body" class="opui-tree-body opui-modal-scroll"></div>
+        <div class="opui-modal-footer opui-modal-actions opui-modal-actions--split">
+          <button type="button" id="tree-cancel" class="opui-btn opui-btn--dialog">Cancel</button>
+          <button type="button" id="tree-select" class="opui-btn opui-btn--dialog">Select</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-multi" class="opui-modal" hidden>
+      <div class="opui-modal-card opui-modal-card--multi">
+        <div id="multi-title" class="opui-modal-title"></div>
+        <div id="multi-list" class="opui-multi-list opui-modal-scroll"></div>
+        <div class="opui-modal-footer opui-modal-actions opui-modal-actions--split">
+          <button type="button" id="multi-cancel" class="opui-btn opui-btn--dialog">Cancel</button>
+          <button type="button" id="multi-select" class="opui-btn opui-btn--dialog opui-btn--primary">Select</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-html" class="opui-modal" hidden>
+      <div class="opui-modal-card opui-modal-card--dialog opui-modal-card--html">
+        <div id="html-title" class="opui-modal-title"></div>
+        <div id="html-body" class="opui-modal-scroll opui-html-content"></div>
+        <div class="opui-modal-footer opui-modal-actions opui-modal-actions--end">
+          <button type="button" id="html-ok" class="opui-btn opui-btn--dialog opui-btn--primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <dialog id="driver-camera-dialog" class="opui-dialog opui-driver-cam opui-driver-cam--fullscreen">
+      <button type="button" id="driver-cam-close" class="opui-driver-cam__close" aria-label="Close"></button>
+      <div class="opui-driver-cam__viewport">
+        <video id="driver-video" autoplay playsinline muted></video>
+        <div id="driver-cam-loading" class="opui-driver-cam__loading">camera starting</div>
+        <div id="driver-face-box" class="opui-driver-cam__face" hidden></div>
+      </div>
+    </dialog>
+  </div>
+  </div>
+
+  <!-- PC dev simulation — outside scaled viewport -->
+  <aside id="dev-panel" class="opui-dev-panel" hidden>
+    <div class="opui-dev-title">PC Dev 模拟</div>
+    <div class="opui-dev-presets">
+      <button type="button" data-preset="home">离路</button>
+      <button type="button" data-preset="onroad_engaged">行驶·激活</button>
+      <button type="button" data-preset="onroad_disengaged">行驶·未激活</button>
+      <button type="button" data-preset="override">Override</button>
+      <button type="button" data-preset="lat_only">仅横向</button>
+      <button type="button" data-preset="alert_critical">严重告警</button>
+      <button type="button" data-preset="e2e_green">E2E 绿灯</button>
+      <button type="button" data-preset="standstill_timer">静止计时</button>
+      <button type="button" data-preset="long_only">仅纵向</button>
+      <button type="button" data-preset="alert_full">全屏告警</button>
+      <button type="button" data-preset="home_update">Home·更新</button>
+      <button type="button" data-preset="home_alerts">Home·告警</button>
+    </div>
+    <label class="opui-dev-row"><input type="checkbox" id="dev-started" /> 已上路 (started)</label>
+    <label class="opui-dev-row"><input type="checkbox" id="dev-engaged" /> 已激活 (engaged)</label>
+    <label class="opui-dev-row"><input type="checkbox" id="dev-experimental" /> Experimental</label>
+    <label class="opui-dev-row"><input type="checkbox" id="dev-recording" /> 录音麦克风</label>
+    <label class="opui-dev-row">车速 <input type="range" id="dev-speed" min="0" max="150" value="72" /> <span id="dev-speed-val">72</span></label>
+  </aside>
+  <script type="module" src="/static/js/app.js?v=45"></script>
+</body>
+</html>
